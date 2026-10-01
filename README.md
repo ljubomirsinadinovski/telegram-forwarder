@@ -7,7 +7,7 @@ Copies new messages from one Telegram group to another chat or channel.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install "telethon>=1.36,<2"
+pip install -r requirements.txt
 ```
 
 Get `API_ID` and `API_HASH` at https://my.telegram.org (API development tools) and put them in `forwarder.py`.
