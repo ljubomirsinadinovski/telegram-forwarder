@@ -38,7 +38,19 @@ List your chats and their IDs (the first run logs you in):
 python forwarder.py --list
 ```
 
-Put the IDs into `SOURCE_ID` and `TARGET_ID` in `forwarder.py`, then start forwarding:
+Put the IDs into `forwarder.py`: the chats to copy from go in `SOURCES`, the chat to copy to goes in `TARGET_ID`.
+
+```python
+SOURCES = [
+    (-1001111111111, None),   # whole group
+    (-1003333333333, 57),     # only topic 57 of this group
+]
+TARGET_ID = -1002222222222
+```
+
+If a group has topics, `--list` prints them under the group. Use `None` to copy the whole group.
+
+Then start forwarding:
 
 ```bash
 python forwarder.py
