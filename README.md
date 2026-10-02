@@ -50,6 +50,8 @@ TARGET_ID = -1002222222222
 
 If a group has topics, `--list` prints them under the group. Use `None` to copy the whole group.
 
+Each copied message starts with the author's name in bold. Set `SHOW_AUTHOR = False` to turn it off.
+
 Then start forwarding:
 
 ```bash

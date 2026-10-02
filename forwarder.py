@@ -2,8 +2,10 @@ import sys
 import asyncio
 import logging
 import tempfile
-from telethon import TelegramClient, events, functions
+import copy
+from telethon import TelegramClient, events, functions, utils
 from telethon.errors import ChatForwardsRestrictedError
+from telethon.tl.types import MessageEntityBold, MessageMediaWebPage
 
 # ---- fill these in ----
 API_ID = 1234567                 # from my.telegram.org (friend's account)
@@ -15,6 +17,7 @@ SOURCES = [
     (-1003333333333, 57),
 ]
 TARGET_ID = -1002222222222       # where everything is copied to (get it with --list)
+SHOW_AUTHOR = True               # put the sender's name in bold above each message
 # -----------------------
 
 logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
@@ -27,6 +30,29 @@ def topic_of(message):
     if not r or not r.forum_topic:
         return 1
     return r.reply_to_top_id or r.reply_to_msg_id
+
+
+async def author_of(message):
+    if message.post_author:          # signed channel post
+        return message.post_author
+    sender = await message.get_sender()
+    return utils.get_display_name(sender) if sender else None
+
+
+def with_header(text, entities, header):
+    """Put a bold header line above the text, shifting existing formatting down."""
+    text, entities = text or "", list(entities or [])
+    if not header:
+        return text, entities
+    prefix = header + "\n" if text else header
+    shift = len(prefix.encode("utf-16-le")) // 2   # Telegram offsets count UTF-16 units
+    bold_len = len(header.encode("utf-16-le")) // 2
+    moved = []
+    for e in entities:
+        e = copy.copy(e)
+        e.offset += shift
+        moved.append(e)
+    return prefix + text, [MessageEntityBold(0, bold_len)] + moved
 
 
 SOURCE_CHATS = list({chat for chat, _ in SOURCES})
@@ -60,48 +86,45 @@ async def main():
 
     await client.get_dialogs()     # make sure both chats are known
 
-    async def repost_fast(messages):
-        """Reuse the media already on Telegram's servers (no download)."""
-        if len(messages) == 1:
-            await client.send_message(TARGET_ID, messages[0])   # copy, no "Forwarded from"
-        else:
-            await client.send_file(
-                TARGET_ID,
-                [m.media for m in messages],
-                caption=[m.message or "" for m in messages],
-                parse_mode=None,   # captions are plain text; don't let markdown eat underscores
-            )
+    async def captions(messages):
+        """Text and formatting for each message, with the author on the captioned one."""
+        header = await author_of(messages[0]) if SHOW_AUTHOR else None
+        first = next((i for i, m in enumerate(messages) if m.message), 0)
+        return [
+            with_header(m.message, m.entities, header if i == first else None)
+            for i, m in enumerate(messages)
+        ]
 
-    async def repost_reupload(messages):
-        """Source group restricts saving content: download the media and upload it again."""
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = [await m.download_media(file=tmp) for m in messages]
-            if len(messages) == 1:
-                m, path = messages[0], paths[0]
-                if path:
-                    await client.send_file(TARGET_ID, path, caption=m.message,
-                                           formatting_entities=m.entities,
-                                           supports_streaming=True)
-                else:
-                    await client.send_message(TARGET_ID, m.message,
-                                              formatting_entities=m.entities)
-            else:
-                await client.send_file(
-                    TARGET_ID,
-                    paths,
-                    caption=[m.message or "" for m in messages],
-                    parse_mode=None,
-                    supports_streaming=True,
-                )
+    async def send(messages, files):
+        texts = await captions(messages)
+        if len(messages) == 1:
+            (text, entities), = texts
+            await client.send_message(TARGET_ID, text, formatting_entities=entities,
+                                      file=files[0], parse_mode=None,
+                                      link_preview=isinstance(messages[0].media, MessageMediaWebPage),
+                                      supports_streaming=True)
+        else:
+            await client.send_file(TARGET_ID, files,
+                                   caption=[t for t, _ in texts],
+                                   formatting_entities=[e for _, e in texts],
+                                   parse_mode=None, supports_streaming=True)
+
+    def media_of(m):
+        return None if isinstance(m.media, MessageMediaWebPage) else m.media
 
     async def repost(messages):
         messages = [m for m in messages if not m.action]   # skip joins, pins, etc.
         if not messages:
             return
         try:
-            await repost_fast(messages)
+            # reuse the media already on Telegram's servers (no download)
+            await send(messages, [media_of(m) for m in messages])
         except ChatForwardsRestrictedError:
-            await repost_reupload(messages)
+            # source restricts saving content: download the media and upload it again
+            with tempfile.TemporaryDirectory() as tmp:
+                paths = [await m.download_media(file=tmp) if media_of(m) else None
+                         for m in messages]
+                await send(messages, paths)
 
     @client.on(events.NewMessage(chats=SOURCE_CHATS))
     async def on_message(event):
